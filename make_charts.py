@@ -44,6 +44,66 @@ def white_premium_history(years=5):
     return merged[merged["date"] >= cutoff]
 
 
+def white_premium_stats(years=5, anchor="window_low", recent_half_window=45):
+    """Window stats + raws/whites decomposition for the white premium.
+    Pure: no plotting, no I/O — ports straight into the Dash app.
+
+    Parameters
+    ----------
+    years : int
+        Lookback window in years (passed to white_premium_history).
+    anchor : {"window_low", "recent_low"}
+        "window_low" — anchor the decomposition to the lowest WP in the window.
+        "recent_low" — anchor to the most recent centred local-min over
+                       +/- recent_half_window trading days. Falls back to the
+                       window low if no qualifying local-min exists yet
+                       (e.g. when prices are still drifting down).
+    recent_half_window : int
+        Half-width (trading days) of the centred window used to define a
+        "local min" when anchor="recent_low". Default 45 (~9 weeks).
+
+    Decomposition uses dWP = dQW - dSB * 22.0462:
+      raws_leg   = -dSB * 22.0462   (raws contribution)
+      whites_leg = dQW              (whites contribution)
+    """
+    df = white_premium_history(years=years).reset_index(drop=True)
+    wp = df["wp"]
+    current = float(wp.iloc[-1])
+    percentile = float((wp <= current).mean() * 100)
+
+    if anchor == "window_low":
+        anchor_pos = int(wp.idxmin())
+    elif anchor == "recent_low":
+        w = 2 * recent_half_window + 1
+        rolling_min = wp.rolling(window=w, center=True).min()
+        local_min_mask = (wp == rolling_min) & rolling_min.notna()
+        candidates = wp.index[local_min_mask].tolist()
+        anchor_pos = candidates[-1] if candidates else int(wp.idxmin())
+    else:
+        raise ValueError(f"anchor must be 'window_low' or 'recent_low', got {anchor!r}")
+
+    anchor_row = df.iloc[anchor_pos]
+    d_sb = float(df["price_sb"].iloc[-1] - anchor_row["price_sb"])
+    d_qw = float(df["price_qw"].iloc[-1] - anchor_row["price_qw"])
+
+    return {
+        "current": current,
+        "percentile": percentile,
+        "min": float(wp.min()),
+        "max": float(wp.max()),
+        "mean": float(wp.mean()),
+        "median": float(wp.median()),
+        "q1": float(wp.quantile(0.25)),
+        "q3": float(wp.quantile(0.75)),
+        "anchor_kind": anchor,
+        "anchor_date": anchor_row["date"],
+        "anchor_wp": float(anchor_row["wp"]),
+        "delta_wp": current - float(anchor_row["wp"]),
+        "raws_leg": -d_sb * WP_FACTOR,
+        "whites_leg": d_qw,
+    }
+
+
 def seasonal_index(tab="SB1", years=None):
     """Average within-year seasonal shape: each month expressed as % of that
     year's mean price, then averaged across COMPLETE years. 100 = annual average,
@@ -96,11 +156,19 @@ def plot_forward_curve(prices, product, outfile, label_date):
     print("saved", outfile)
 
 
-def plot_white_premium(df, outfile, label_date):
-    latest = df["wp"].iloc[-1]
-    fig = go.Figure(go.Scatter(x=df["date"], y=df["wp"], mode="lines", line=dict(width=1.5)))
+def plot_white_premium(df, stats, outfile, label_date):
+    fig = go.Figure()
+    # IQR shading first so the WP line draws over it
+    fig.add_hrect(y0=stats["q1"], y1=stats["q3"],
+                  fillcolor="rgba(99,110,250,0.12)", line_width=0, layer="below")
+    fig.add_trace(go.Scatter(x=df["date"], y=df["wp"], mode="lines",
+                             line=dict(width=1.5), showlegend=False))
+    fig.add_hline(y=stats["mean"], line_dash="dot", line_color="gray",
+                  annotation_text=f"mean ${stats['mean']:.0f}",
+                  annotation_position="top left")
     fig.update_layout(
-        title=f"White Premium (QW - SB x {WP_FACTOR}) — ~${latest:.0f}/t, {label_date}",
+        title=(f"White Premium (QW - SB x {WP_FACTOR}) — "
+               f"${stats['current']:.0f}/t, {stats['percentile']:.0f}th pct, {label_date}"),
         xaxis_title="Date", yaxis_title="White premium ($/tonne)",
         template="plotly_white")
     fig.write_image(outfile)
@@ -142,5 +210,24 @@ if __name__ == "__main__":
     label = snapshot_date()
     plot_forward_curve(latest_curve("SB"), "SB (raws)", "charts/sb_curve.png", label)
     plot_forward_curve(latest_curve("QW"), "QW (whites)", "charts/qw_curve.png", label)
-    plot_white_premium(white_premium_history(years=5), "charts/white_premium_5y.png", label)
+    stats = white_premium_stats(years=5, anchor="window_low")
+    plot_white_premium(white_premium_history(years=5), stats,
+                       "charts/white_premium_5y.png", label)
     plot_seasonal(seasonal_index("SB1"), "charts/sb_seasonal.png")
+
+    recent = white_premium_stats(years=5, anchor="recent_low")
+
+    print()
+    print("=== White Premium (5y window) ===")
+    print(f"current:    ${stats['current']:.1f}/t  ({stats['percentile']:.1f}th pct)")
+    print(f"window:     min ${stats['min']:.1f}   max ${stats['max']:.1f}")
+    print(f"            mean ${stats['mean']:.1f}  median ${stats['median']:.1f}")
+    print(f"            IQR  ${stats['q1']:.1f} - ${stats['q3']:.1f}")
+    print()
+    for s, header in [(stats,  "anchor=window_low (all-window WP-low)"),
+                      (recent, "anchor=recent_low (most recent local low)")]:
+        print(f"--- {header} ---")
+        print(f"  anchor:     {s['anchor_date']:%Y-%m-%d}  @ ${s['anchor_wp']:.1f}/t")
+        print(f"  dWP:        ${s['delta_wp']:+.1f}/t")
+        print(f"    raws:     ${s['raws_leg']:+.1f}/t   (-dSB x {WP_FACTOR})")
+        print(f"    whites:   ${s['whites_leg']:+.1f}/t   (dQW)")
