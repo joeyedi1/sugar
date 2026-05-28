@@ -8,6 +8,7 @@ from datetime import date
 
 import pandas as pd
 import cot_reports as cot
+from analytics import rolling_percentile
 
 
 def load_cot(
@@ -47,8 +48,11 @@ def load_cot(
         - market_df['M_Money_Positions_Short_All']
     )
 
-    return market_df[['Date', 'Managed_Money_Net']].reset_index(drop=True)
+    market_df = market_df.sort_values('Date').reset_index(drop=True)
+    market_df["MM_pct"] = rolling_percentile(market_df["Managed_Money_Net"])
 
+    return market_df[['Date', 'Managed_Money_Net', 'MM_pct']]
+    
 
 if __name__ == '__main__':
     print(load_cot().tail())

@@ -11,6 +11,18 @@ import pandas as pd
 from load_data import load_prices
 from load_cot import load_cot
 
+# ============================================================
+# HELPERS
+# ============================================================
+
+def pct_color(x):
+    if pd.isna(x):
+        return 'lightgray'
+    if x < 10:
+        return 'limegreen'      # crowded short -> contrarian bullish
+    if x > 90:
+        return 'crimson'        # crowded long
+    return 'lightgray'      # mid-range, no signal
 
 # ============================================================
 # DATA
@@ -23,7 +35,7 @@ df = pd.merge(prices, cot_data, on='Date', how='left')
 
 # COT releases Tuesday; ffill carries that value through the rest of the
 # week so daily price rows have a non-null COT value to chart.
-df['Managed_Money_Net'] = df['Managed_Money_Net'].ffill()
+df[['Managed_Money_Net', 'MM_pct']] = df[['Managed_Money_Net', 'MM_pct']].ffill()
 
 
 # ============================================================
@@ -51,7 +63,8 @@ app.layout = html.Div(children=[
 
     dcc.Graph(id='my-price-chart'),
     dcc.Graph(id='my-spread-chart'),
-    dcc.Graph(id='my-cot-chart')
+    dcc.Graph(id='my-cot-chart'),
+    dcc.Graph(id='my-pct-chart')
 ])
 
 
@@ -63,6 +76,7 @@ app.layout = html.Div(children=[
     Output(component_id='my-price-chart', component_property='figure'),
     Output(component_id='my-spread-chart', component_property='figure'),
     Output(component_id='my-cot-chart', component_property='figure'),
+    Output(component_id='my-pct-chart', component_property='figure'),
     Input(component_id='my-sugar-dropdown', component_property='value')
 )
 def update_graph(selected_contracts):
@@ -91,7 +105,18 @@ def update_graph(selected_contracts):
     )
     fig_cot.update_traces(marker_color=['green' if val > 0 else 'red' for val in cot_df['Managed_Money_Net']])
 
-    return fig, fig_spread, fig_cot
+    fig_pct = px.line(
+        cot_df,
+        x='Date',
+        y='MM_pct',
+        title="Managed Money Percentile (5y rolling; low = crowded short / contrarian-bullish)"
+    )
+
+    # signal bands: green = crowded short (<10), red = crowded long (>90)      
+    fig_pct.add_hrect(y0=0,  y1=10,  fillcolor="green", opacity=0.12, line_width=0)
+    fig_pct.add_hrect(y0=90, y1=100, fillcolor="red",   opacity=0.12, line_width=0)
+
+    return fig, fig_spread, fig_cot, fig_pct
 
 
 if __name__ == '__main__':
