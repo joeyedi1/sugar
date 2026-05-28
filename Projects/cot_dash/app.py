@@ -7,6 +7,7 @@ defines the layout + callback.
 from dash import Dash, html, dcc, Input, Output
 import plotly.express as px
 import pandas as pd
+import plotly.graph_objects as go
 
 from load_data import load_prices
 from load_cot import load_cot
@@ -61,10 +62,19 @@ app.layout = html.Div(children=[
         value='SB1_Price'
     ),
 
+    dcc.DatePickerRange(
+        id='date-range',
+        min_date_allowed=df["Date"].min(),
+        max_date_allowed=df["Date"].max(),
+        start_date=df['Date'].min(),
+        end_date=df['Date'].max()
+    ),
+
     dcc.Graph(id='my-price-chart'),
     dcc.Graph(id='my-spread-chart'),
     dcc.Graph(id='my-cot-chart'),
-    dcc.Graph(id='my-pct-chart')
+    dcc.Graph(id='my-pct-chart'),
+
 ])
 
 
@@ -77,18 +87,33 @@ app.layout = html.Div(children=[
     Output(component_id='my-spread-chart', component_property='figure'),
     Output(component_id='my-cot-chart', component_property='figure'),
     Output(component_id='my-pct-chart', component_property='figure'),
-    Input(component_id='my-sugar-dropdown', component_property='value')
+    Input(component_id='my-sugar-dropdown', component_property='value'),
+    Input(component_id='date-range', component_property='start_date'),
+    Input(component_id='date-range', component_property='end_date')
+
 )
-def update_graph(selected_contracts):
+def update_graph(selected_contracts, start_date, end_date):
+
+    if start_date is None:
+        start_date = df['Date'].min()
+    if end_date is None:
+        end_date = df['Date'].max()
+
+    cot_df = df[df['Date'].between(start_date, end_date)]
+
+    cot_df = cot_df.copy()
+    cot_df['MA'] = cot_df[selected_contracts].rolling(50).mean()
+
+
     fig = px.line(
-        df,
+        cot_df,
         x='Date',
         y=selected_contracts,
         title="Sugar No.11 Futures Prices"
     )
 
     fig_spread = px.line(
-        df,
+        cot_df,
         x='Date',
         y='SB1_SB2_Spread',
         title="SB1 - SB2 Calendar Spread (Physical Tightness)"
@@ -96,9 +121,8 @@ def update_graph(selected_contracts):
 
     # Bind the chart's data to a single frame so the colour list cannot
     # desync from the bars when a date-range filter is added later.
-    cot_df = df
     fig_cot = px.bar(
-        data_frame=cot_df,
+        cot_df,
         x="Date",
         y="Managed_Money_Net",
         title="Managed Money Net Positioning (CFTC)"
@@ -112,9 +136,17 @@ def update_graph(selected_contracts):
         title="Managed Money Percentile (5y rolling; low = crowded short / contrarian-bullish)"
     )
 
+    fig.add_trace(go.Scatter(
+        x=cot_df['Date'],
+        y=cot_df['MA'],
+        name='50-day MA',
+        line=dict(dash='dot')
+    ))
+
     # signal bands: green = crowded short (<10), red = crowded long (>90)      
     fig_pct.add_hrect(y0=0,  y1=10,  fillcolor="green", opacity=0.12, line_width=0)
     fig_pct.add_hrect(y0=90, y1=100, fillcolor="red",   opacity=0.12, line_width=0)
+
 
     return fig, fig_spread, fig_cot, fig_pct
 
